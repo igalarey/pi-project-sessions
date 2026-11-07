@@ -26,7 +26,7 @@ function host(f, session = 'coordinator', mode = 'ok') {
   });
   const ctx = { cwd: f.dir, sessionManager: { getSessionId: () => session, getBranch: () => entries }, async executeTool(name, args) { calls.push([name, args]); return { toolCall: { type: 'toolCall', id: `call/${calls.length}`, name, arguments: args }, result: ctx.nested ?? { content: [{ type: 'text', text: 'accepted' }], details: { agentId: args.resume, status: 'background' } }, isError: ctx.nestedError ?? false }; } };
   let tool;
-  extension({ events: bus, on: (n, fn) => hooks.set(n, fn), registerTool: t => { tool = t; }, appendEntry: (customType, data) => entries.push({ type: 'custom', customType, data }) }, { lockDir: f.locks, timeoutMs: 30, getRecord: id => records.get(id) });
+  extension({ getAllTools: () => [{ name: 'Agent' }, { name: 'get_subagent_result' }], events: bus, on: (n, fn) => hooks.set(n, fn), registerTool: t => { tool = t; }, appendEntry: (customType, data) => entries.push({ type: 'custom', customType, data }) }, { lockDir: f.locks, timeoutMs: 30, getRecord: id => records.get(id) });
   hooks.get('session_start')({}, ctx);
   return { ctx, entries, records, calls, hooks, bus, run: (args, signal) => tool.execute('call', args, signal, undefined, ctx), shutdown() { hooks.get('session_shutdown')({}, ctx); bus.emit('subagents:disposed', {}); }, listeners };
 }
@@ -51,7 +51,7 @@ test('dispatch, busy, stable resume, result, branch ownership and native-only no
   assert.ok(results.some(r => r.details?.status === 'busy'));
   const spawn = h.calls.find(([n]) => n === 'subagents:rpc:spawn')[1];
   assert.equal(spawn.options.cwd, f.repo); assert.equal(spawn.options.inheritContext, false); assert.equal(spawn.options.isBackground, true); assert.equal(spawn.options.signal, undefined); assert.equal(spawn.options.requireExactType, true);
-  assert.deepEqual(h.entries[0].data, { root: f.repo, id: 'worker-1' });
+  assert.deepEqual(h.entries[0].data, { root: f.repo, id: 'worker-1', backend: 'tintinweb' });
   h.records.set('worker-1', { status: 'completed' });
   assert.equal((await h.run(dispatch(f.repo))).details.status, 'background');
   assert.equal(h.calls.find(([n]) => n === 'Agent')[1].resume, 'worker-1');

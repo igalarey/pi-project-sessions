@@ -3,6 +3,7 @@ name: project-worker
 description: Bounded implementation worker for one explicitly assigned Git repository
 prompt_mode: replace
 persist_session: true
+auto-exit: true
 tools: read,grep,find,ls,bash,edit,write
 extensions: false
 skills: false
