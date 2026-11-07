@@ -110,8 +110,15 @@ An event from the other backend cannot release a worker's lease.
 The installed Pi host and native subagent package are prerequisites.
 The interactive runtime must provide owned status and the `resume_only`, `expected_cwd`, and `expected_agent` parameters.
 Only the historical backend uses RPC with the `exact-type` and `resume-cwd` capabilities.
-This package has no npm dependencies.
-These instructions describe a later installation step, not automatic activation of this worktree.
+This package has no npm dependencies. It is a separate user extension, not part of the sealed harness package set.
+The repository is private and requires GitHub access.
+
+Clone the repository before installation:
+
+```sh
+git clone git@github.com:igalarey/pi-project-sessions.git
+cd pi-project-sessions
+```
 
 1. Run the tests from this directory:
 
@@ -150,7 +157,8 @@ PI_TEST_SUBAGENTS_ROOT=/path/to/@tintinweb/pi-subagents \
 npm test
 ```
 
-The interactive host test uses Pi 1.5+, the interactive source runtime, and a faux provider.
+The interactive host test uses Pi 1.5+, the interactive runtime, and a faux provider.
+`PI_TEST_INTERACTIVE_ROOT` can select a source checkout or a prepared release package.
 It creates two temporary Git repositories and projects extension and profile links into a temporary HOME.
 Its explicit process backend uses PTYs, not Herdr window controls.
 The fixture blocks network calls in both the parent and child processes.
