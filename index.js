@@ -9,7 +9,7 @@ const result = details => ({ content: [{ type: 'text', text: JSON.stringify(deta
 const failure = message => ({ isError: true, content: [{ type: 'text', text: message }] });
 
 export default function projectSessions(pi, options = {}) {
-  const bindings = new Map(), reserved = new Set(), pending = new Set(), waits = new Set();
+  const bindings = new Map(), reserved = new Set(), pending = new Set();
   const stores = new Map();
   let session, backend, branchEpoch = 0, closing = false;
   const disposed = new Set();
@@ -38,7 +38,6 @@ export default function projectSessions(pi, options = {}) {
   }
   const getRecord = options.getRecord ?? (id => globalThis[Symbol.for('pi-subagents:manager')]?.getRecord(id));
   const lockDir = options.lockDir ?? join(process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent'), 'project-sessions', 'locks');
-  const timeoutMs = options.timeoutMs ?? 10000;
   function restore(_event, ctx) {
     branchEpoch++;
     session = ctx.sessionManager.getSessionId();
@@ -73,33 +72,20 @@ export default function projectSessions(pi, options = {}) {
   }
   pi.on('session_shutdown', () => {
     closing = true;
-    for (const cancel of [...waits]) cancel();
     // Native disposal is the only safe barrier: its shutdown hook may run after ours.
     if (disposed.has(backend) || !reserved.size) release();
   });
-  function rpc(method, payload, signal) {
-    return new Promise((resolve, reject) => {
-      if (closing || signal?.aborted) { reject(new Error('Request cancelled')); return; }
-      const requestId = randomUUID(), channel = `subagents:rpc:${method}`;
-      let timer, off;
-      const finish = (error, data) => {
-        clearTimeout(timer); off?.(); signal?.removeEventListener('abort', cancel); waits.delete(cancel);
-        if (error) reject(error); else resolve(data);
-      };
-      const cancel = () => finish(new Error('Request cancelled; emitted dispatch may still be active'));
-      off = pi.events.on(`${channel}:reply:${requestId}`, reply => {
-        if (reply?.success === true) finish(null, reply.data);
-        else finish(new Error(reply?.error || 'Native RPC refused request'));
-      });
-      waits.add(cancel); signal?.addEventListener('abort', cancel, { once: true });
-      timer = setTimeout(() => finish(new Error(`Native ${method} timed out; dispatch state may be uncertain`)), timeoutMs);
-      try { pi.events.emit(channel, { ...payload, requestId }); } catch (e) { finish(e); }
-    });
+  function assertCoordinatorRuntime() {
+    const capabilities = globalThis[Symbol.for('pi.subagents.tool-extension-registry')]?.capabilities;
+    if (backend !== 'interactive' || capabilities?.version !== 1 ||
+        !['personalSkillCatalog', 'perParentChildLimit', 'persistedExtensionBindings', 'scopedExtensionProfiles'].every(key => capabilities[key] === true)) {
+      throw new Error('Project coordinator runtime upgrade required; restart Pi with a compatible interactive runtime supporting personalSkillCatalog, perParentChildLimit, persistedExtensionBindings and scopedExtensionProfiles (capabilities version 1). Dispatch and saved resume are refused; saved results remain readable. Old loadout safety cannot be inferred from a project binding, and no scope upgrade or fallback is performed.');
+    }
   }
   pi.registerTool({
     name: 'project_session', label: 'Project session',
     description: 'Dispatch bounded implementation tasks to stable per-Git-repo background project-worker sessions (30 turns), list up to 100 owned sessions, or retrieve one result by path. Existing/prospective file paths accepted. Busy workers are never steered. Reuses only this coordinator branch; no cwd switch, model override, arbitrary IDs, or automatic launches. Native completion notification will arrive; do not poll. Workers have local file/shell tools, not a sandbox; user permissions still apply.',
-    reachesTools: () => ['subagent', 'subagent_status', 'subagent_message', 'Agent', 'get_subagent_result'],
+    reachesTools: () => ['subagent', 'subagent_status', 'subagent_message', 'get_subagent_result'],
     parameters: { type: 'object', additionalProperties: false, required: ['action'], properties: {
       action: { type: 'string', enum: ['dispatch', 'list', 'result'] },
       path: { type: 'string', minLength: 1, maxLength: 4096 },
@@ -137,6 +123,7 @@ export default function projectSessions(pi, options = {}) {
           assertBranch();
           return { ...outcome.result, isError: outcome.isError };
         }
+        assertCoordinatorRuntime();
         let currentRoot;
         try { currentRoot = await repositoryRoot(ctx.cwd); } catch { /* A home coordinator need not be a repository. */ }
         if (currentRoot === root) throw new Error('Already in this repository; do not delegate to the same root');
@@ -149,66 +136,32 @@ export default function projectSessions(pi, options = {}) {
         try {
           if (!session || session !== ctx.sessionManager.getSessionId()) throw new Error('Coordinator session not initialized');
           stores.get(session).acquire(root);
-          if (backend === 'interactive') {
-            if (binding) {
-              reserved.add(root);
-              const status = await ownedStatus();
-              if (status.status === 'running') return result({ root, agentId: id, status: 'busy' });
-            }
-            assertBranch();
-            if (signal?.aborted) throw new Error('Request cancelled');
+          if (binding) {
             reserved.add(root);
-            const name = binding?.name ?? `project-${randomUUID()}`;
-            const outcome = await ctx.executeTool(binding ? 'subagent_message' : 'subagent', binding ? {
-              name, message: args.task, resume_only: true, expected_cwd: root, expected_agent: 'project-worker',
-            } : { agent: 'project-worker', name, cwd: root, task: args.task }, { signal });
-            assertBranch();
-            if (outcome.isError) return { ...outcome.result, isError: true };
-            const data = outcome.result.details;
-            if (data?.status !== 'started' || typeof data.id !== 'string' || !data.id || data.name !== name || ((!binding || data.agent !== undefined) && data.agent !== 'project-worker') || typeof data.sessionFile !== 'string' || !isAbsolute(data.sessionFile)) {
-              throw new Error('Native launch acknowledgement is invalid. Repository remains reserved. No fallback worker will be launched.');
-            }
-            if (binding && (data.id !== id || data.sessionFile !== binding.sessionFile)) throw new Error('Native resume changed worker identity. Repository remains reserved.');
-            if (!binding) {
-              binding = { backend: 'interactive', root, id: data.id, name, sessionFile: data.sessionFile };
-              bindings.set(root, binding);
-              pi.appendEntry(ENTRY, binding);
-            }
-            return result({ root, agentId: binding.id, name, status: 'started', backend });
-          }
-          if (id && ['running', 'queued'].includes(getRecord(id)?.status)) return result({ root, agentId: id, status: 'busy' });
-          if (signal?.aborted) throw new Error('Request cancelled');
-          const description = args.task.trim().slice(0, 120);
-          const ping = await rpc('ping', {}, signal);
-          if (ping?.version !== 2 || !Array.isArray(ping.capabilities) || !['exact-type', 'resume-cwd'].every(capability => ping.capabilities.includes(capability))) {
-            throw new Error('Native runtime upgrade required: project_session needs RPC v2 capabilities exact-type and resume-cwd. No fallback worker will be launched.');
+            const status = await ownedStatus();
+            if (status.status === 'running') return result({ root, agentId: id, status: 'busy' });
           }
           assertBranch();
-          if (id) {
-            reserved.add(root);
-            const outcome = await ctx.executeTool('Agent', { resume: id, prompt: args.task, description, subagent_type: 'project-worker', run_in_background: true });
-            const resumed = outcome.result;
-            if (outcome.isError) return { ...resumed, isError: true };
-            if (resumed.details?.agentId !== id || resumed.details?.status !== 'background') return failure(`Native resume not accepted; no fallback spawn. ${resumed.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') ?? ''}`);
-            return result({ root, agentId: id, status: 'background' });
-          }
-          const ownerSession = session;
-          const bind = agentId => {
-            if (typeof agentId !== 'string' || !agentId) return;
-            if (session !== ownerSession || epoch !== branchEpoch || closing) return;
-            if (bindings.get(root)?.id !== agentId) {
-              const saved = { root, id: agentId, backend: 'tintinweb' };
-              bindings.set(root, saved); pi.appendEntry(ENTRY, saved);
-            }
-          };
+          if (signal?.aborted) throw new Error('Request cancelled');
+          assertCoordinatorRuntime();
           reserved.add(root);
-          const spawned = await rpc('spawn', { type: 'project-worker', prompt: args.task, options: {
-            cwd: root, description, name: 'project-worker', isBackground: true,
-            inheritContext: false, isolated: true, maxTurns: 30, requireExactType: true, onSpawned: bind,
-          } }, signal);
-          if (typeof spawned?.id !== 'string' || !spawned.id) throw new Error('Native spawn acknowledgement has no ID; repository remains reserved');
-          bind(spawned.id);
-          return result({ root, agentId: spawned.id, status: 'background' });
+          const name = binding?.name ?? `project-${randomUUID()}`;
+          const outcome = await ctx.executeTool(binding ? 'subagent_message' : 'subagent', binding ? {
+            name, message: args.task, resume_only: true, expected_cwd: root, expected_agent: 'project-worker',
+          } : { agent: 'project-worker', name, cwd: root, task: args.task }, { signal });
+          assertBranch();
+          if (outcome.isError) return { ...outcome.result, isError: true };
+          const data = outcome.result.details;
+          if (data?.status !== 'started' || typeof data.id !== 'string' || !data.id || data.name !== name || ((!binding || data.agent !== undefined) && data.agent !== 'project-worker') || typeof data.sessionFile !== 'string' || !isAbsolute(data.sessionFile)) {
+            throw new Error('Native launch acknowledgement is invalid. Repository remains reserved. No fallback worker will be launched.');
+          }
+          if (binding && (data.id !== id || data.sessionFile !== binding.sessionFile)) throw new Error('Native resume changed worker identity. Repository remains reserved.');
+          if (!binding) {
+            binding = { backend: 'interactive', root, id: data.id, name, sessionFile: data.sessionFile };
+            bindings.set(root, binding);
+            pi.appendEntry(ENTRY, binding);
+          }
+          return result({ root, agentId: binding.id, name, status: 'started', backend });
         } finally { pending.delete(root); }
       } catch (error) { return failure(error.message ?? String(error)); }
     },

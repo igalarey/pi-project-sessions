@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -44,31 +44,20 @@ test('canonical Git discovery handles prospective files, symlinks, worktrees and
   const bare = join(f.dir, 'bare'); execFileSync('git', ['init', '--bare', '-q', bare]); await assert.rejects(repositoryRoot(bare), /Git/);
 });
 
-test('dispatch, busy, stable resume, result, branch ownership and native-only notification', async t => {
+test('historical backend refuses new coordination and saved resume without leases or native calls', async t => {
   const f = fixture(t), h = host(f); t.after(() => h.shutdown());
-  const results = await Promise.all([h.run(dispatch(f.repo)), h.run(dispatch(f.repo))]);
-  assert.equal(h.calls.filter(([n]) => n === 'subagents:rpc:spawn').length, 1);
-  assert.ok(results.some(r => r.details?.status === 'busy'));
-  const spawn = h.calls.find(([n]) => n === 'subagents:rpc:spawn')[1];
-  assert.equal(spawn.options.cwd, f.repo); assert.equal(spawn.options.inheritContext, false); assert.equal(spawn.options.isBackground, true); assert.equal(spawn.options.signal, undefined); assert.equal(spawn.options.requireExactType, true);
-  assert.deepEqual(h.entries[0].data, { root: f.repo, id: 'worker-1', backend: 'tintinweb' });
-  h.records.set('worker-1', { status: 'completed' });
-  assert.equal((await h.run(dispatch(f.repo))).details.status, 'background');
-  assert.equal(h.calls.find(([n]) => n === 'Agent')[1].resume, 'worker-1');
-  h.ctx.nested = { content: [{ type: 'text', text: 'cwd contract refused' }] };
-  const refused = await h.run(dispatch(f.repo));
-  assert.equal(refused.isError, true);
-  assert.match(refused.content[0].text, /cwd contract refused/);
-  assert.equal(h.calls.filter(([n]) => n === 'subagents:rpc:spawn').length, 1);
-  h.ctx.nested = { content: [{ type: 'text', text: 'native error' }], details: { reason: 'blocked' } };
-  h.ctx.nestedError = true;
-  assert.deepEqual(await h.run(dispatch(f.repo)), { ...h.ctx.nested, isError: true });
-  assert.deepEqual(await h.run({ action: 'result', path: f.repo }), { ...h.ctx.nested, isError: true });
-  assert.equal(h.calls.find(([n]) => n === 'get_subagent_result')[1].agent_id, 'worker-1');
-  assert.ok(!h.calls.some(([n]) => /consume|steer|stop/.test(n)));
-  h.entries.length = 0; h.hooks.get('session_tree')({}, h.ctx);
-  assert.equal((await h.run({ action: 'result', path: f.repo })).isError, true);
-  assert.equal((await h.run(dispatch(f.repo))).isError, true);
+  for (const saved of [false, true]) {
+    if (saved) {
+      h.entries.push({ type: 'custom', customType: 'project-sessions:binding', data: { root: f.repo, id: 'old-worker' } });
+      h.hooks.get('session_tree')({}, h.ctx);
+    }
+    const refused = await h.run(dispatch(f.repo));
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /upgrade.*restart/i);
+    assert.equal(existsSync(f.locks), false);
+    assert.equal(h.calls.length, 0);
+  }
+  assert.equal((await h.run({ action: 'list' })).details.records[0].backend, 'tintinweb');
 });
 
 test('native runtime without required capabilities fails closed before spawn', async t => {
@@ -90,7 +79,8 @@ test('native runtime without required capabilities fails closed before spawn', a
 
 test('result unwraps native content and details rather than exposing the call outcome', async t => {
   const f = fixture(t), h = host(f); t.after(() => h.shutdown());
-  await h.run(dispatch(f.repo));
+  h.entries.push({ type: 'custom', customType: 'project-sessions:binding', data: { root: f.repo, id: 'saved-result' } });
+  h.hooks.get('session_tree')({}, h.ctx);
   h.ctx.nested = { content: [{ type: 'text', text: 'verified work' }], details: { status: 'completed', agentId: 'worker-1' } };
   assert.deepEqual(await h.run({ action: 'result', path: f.repo }), { ...h.ctx.nested, isError: false });
 });
@@ -133,39 +123,25 @@ test('leases refuse other coordinators and corrupt owners, reclaim only dead own
   a.acquire(f.repo); a.releaseAll();
 });
 
-test('spawn uncertainty stays reserved, callback retains id, abort does not kill detached work', async t => {
+test('historical dispatch refuses even uncertain RPC modes; abort makes no calls', async t => {
   for (const mode of ['late', 'silent']) {
     const f = fixture(t), h = host(f, mode, mode); t.after(() => h.shutdown());
     assert.equal((await h.run(dispatch(f.repo))).isError, true);
-    await h.run(dispatch(f.repo));
-    assert.equal(h.calls.filter(([n]) => n === 'subagents:rpc:spawn').length, 1);
-    assert.equal(h.entries.length, mode === 'late' ? 1 : 0);
-    assert.equal([...h.listeners].filter(([n, s]) => n.includes(':reply:') && s.size).length, 0);
+    assert.equal((await h.run(dispatch(f.repo))).isError, true);
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.entries.length, 0);
+    assert.equal(existsSync(f.locks), false);
   }
   const f = fixture(t), h = host(f); t.after(() => h.shutdown());
   const abort = new AbortController(); abort.abort();
   assert.equal((await h.run(dispatch(f.repo), abort.signal)).isError, true);
-  assert.equal(h.calls.filter(([n]) => n === 'subagents:rpc:spawn').length, 0);
+  assert.equal(h.calls.length, 0);
 });
 
-test('late spawn callback cannot bind a worker into a different coordinator branch', async t => {
-  const f = fixture(t), h = host(f, 'coordinator', 'silent'); t.after(() => h.shutdown());
-  await h.run(dispatch(f.repo));
-  const spawn = h.calls.find(([n]) => n === 'subagents:rpc:spawn')[1];
+test('historical list remains bounded and branch rehydrated without dispatch capability', async t => {
+  const f = fixture(t), h = host(f); t.after(() => h.shutdown());
+  for (let i = 0; i < 101; i++) h.entries.push({ type: 'custom', customType: 'project-sessions:binding', data: { root: `/repo/${i}`, id: `id-${i}` } });
   h.hooks.get('session_tree')({}, h.ctx);
-  spawn.options.onSpawned('late-id');
-  assert.equal(h.entries.length, 0);
-  assert.equal((await h.run(dispatch(f.repo))).isError, true);
-});
-
-test('shutdown retains lease until native disposal; list bounded and branch rehydrated', async t => {
-  const f = fixture(t), h = host(f), other = host(f, 'other'); t.after(() => other.shutdown());
-  await h.run(dispatch(f.repo)); h.hooks.get('session_shutdown')({}, h.ctx);
-  assert.equal((await other.run(dispatch(f.repo))).isError, true);
-  h.bus.emit('subagents:disposed', {});
-  assert.equal((await other.run(dispatch(f.repo))).details.status, 'background');
-  other.entries.length = 0;
-  for (let i = 0; i < 101; i++) other.entries.push({ type: 'custom', customType: 'project-sessions:binding', data: { root: `/repo/${i}`, id: `id-${i}` } });
-  other.hooks.get('session_tree')({}, other.ctx);
-  const list = await other.run({ action: 'list' }); assert.equal(list.details.records.length, 100); assert.equal(list.details.truncated, true);
+  const list = await h.run({ action: 'list' }); assert.equal(list.details.records.length, 100); assert.equal(list.details.truncated, true);
+  assert.equal(h.calls.length, 0);
 });

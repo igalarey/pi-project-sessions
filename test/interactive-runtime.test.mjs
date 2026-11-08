@@ -1,11 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import extension from '../index.js';
 
+const registryKey = Symbol.for('pi.subagents.tool-extension-registry');
+const supportedCapabilities = Object.freeze({ version: 1, personalSkillCatalog: true, perParentChildLimit: true, persistedExtensionBindings: true, scopedExtensionProfiles: true });
+function capabilities(t, marker = supportedCapabilities) {
+  const previous = globalThis[registryKey];
+  globalThis[registryKey] = Object.freeze({ capabilities: marker });
+  t.after(() => { if (previous === undefined) delete globalThis[registryKey]; else globalThis[registryKey] = previous; });
+}
 const entryType = 'project-sessions:binding';
 const tools = [
   { name: 'subagent', parameters: { properties: { agent: {}, name: {}, cwd: {}, task: {} } } },
@@ -60,6 +67,7 @@ function host(t, f, entries = [], session = 'parent') {
 }
 
 test('interactive contract: separate roots, owned results, busy refusal, restrictive resume and backend barrier', async t => {
+  capabilities(t);
   const f = setup(t), h = host(t, f), [a, b] = f.roots;
   const first = await h.dispatch(a);
   assert.equal(first.details?.status, 'started', JSON.stringify(first));
@@ -89,6 +97,7 @@ test('interactive contract: separate roots, owned results, busy refusal, restric
 });
 
 test('interactive continuation fails closed for unknown, mismatched and legacy bindings without losing data', async t => {
+  capabilities(t);
   for (const field of ['id', 'cwd', 'agent', 'sessionFile', 'status']) {
     const f = setup(t), h = host(t, f), root = f.roots[0];
     assert.equal((await h.dispatch(root)).isError, undefined);
@@ -112,6 +121,7 @@ test('interactive continuation fails closed for unknown, mismatched and legacy b
 });
 
 test('interactive branch changes, uncertain launch and status/dispatch race never spawn a replacement', async t => {
+  capabilities(t);
   for (const scenario of ['branch', 'uncertain', 'race']) {
     const f = setup(t), h = host(t, f), root = f.roots[0];
     if (scenario === 'uncertain') h.intercept = name => name === 'subagent' ? { isError: true, result: { content: [{ type: 'text', text: 'lost ack' }] } } : undefined;
@@ -140,4 +150,79 @@ test('interactive tools without restrictive resume contract never fall back to t
   assert.equal(refused.isError, true);
   assert.match(refused.content[0].text, /upgrade|contract/i);
   assert.equal(h.calls.length, 0);
+});
+
+for (const [label, marker] of [
+  ['absent', undefined], ['empty', {}], ['wrong version', { ...supportedCapabilities, version: 2 }],
+  ...['personalSkillCatalog', 'perParentChildLimit', 'persistedExtensionBindings', 'scopedExtensionProfiles'].flatMap(key => [
+    [`missing ${key}`, Object.fromEntries(Object.entries(supportedCapabilities).filter(([name]) => name !== key))],
+    [`false ${key}`, { ...supportedCapabilities, [key]: false }],
+    [`nonboolean ${key}`, { ...supportedCapabilities, [key]: 'true' }],
+  ]),
+]) test(`coordinator capability gate rejects ${label} before lease or native calls`, async t => {
+  capabilities(t, marker);
+  if (label === 'absent') delete globalThis[registryKey];
+  const f = setup(t), h = host(t, f);
+  const refused = await h.dispatch(f.roots[0]);
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /upgrade.*restart/i);
+  assert.equal(existsSync(f.locks), false, 'refusal created a lease directory');
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.entries.length, 0);
+});
+
+test('capability gate is checked on resume, but owned historical results remain readable', async t => {
+  capabilities(t);
+  const f = setup(t), h = host(t, f), root = f.roots[0];
+  assert.equal((await h.dispatch(root)).details.status, 'started');
+  const saved = structuredClone(h.entries);
+  const record = h.workers.get(saved[0].data.name);
+  record.status = 'finished'; record.result = 'SAVED_RESULT';
+  delete globalThis[registryKey];
+  const before = h.calls.length;
+  const refused = await h.dispatch(root);
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /upgrade.*restart/i);
+  assert.equal(h.calls.length, before, 'unsafe resume queried or called the native runtime');
+  assert.deepEqual(h.entries, saved);
+  assert.match(JSON.stringify(await h.run({ action: 'result', path: root })), /SAVED_RESULT/);
+  assert.equal((await h.run({ action: 'list' })).details.records.length, 1);
+  globalThis[registryKey] = Object.freeze({ capabilities: supportedCapabilities });
+  assert.equal((await h.dispatch(root)).details.agentId, saved[0].data.id);
+});
+
+test('complete marker does not authorize tintinweb dispatch, but its saved results stay readable', async t => {
+  capabilities(t);
+  const f = setup(t), saved = { type: 'custom', customType: entryType, data: { root: f.roots[0], id: 'historical' } };
+  const h = host(t, f, [saved]);
+  h.metadata = [{ name: 'Agent' }, { name: 'get_subagent_result' }];
+  h.intercept = name => name === 'get_subagent_result' ? { isError: false, result: { content: [{ type: 'text', text: 'HISTORICAL_RESULT' }] } } : undefined;
+  for (const root of f.roots) {
+    assert.equal((await h.dispatch(root)).isError, true);
+    assert.equal(existsSync(f.locks), false);
+  }
+  assert.equal(h.calls.length, 0);
+  assert.match(JSON.stringify(await h.run({ action: 'result', path: f.roots[0] })), /HISTORICAL_RESULT/);
+  assert.deepEqual(h.entries, [saved]);
+});
+
+test('saved interactive resume without marker refuses before acquiring any lease', async t => {
+  capabilities(t, {});
+  const f = setup(t);
+  const saved = { type: 'custom', customType: entryType, data: { backend: 'interactive', root: f.roots[0], id: 'old', name: 'saved', sessionFile: join(f.dir, 'saved.jsonl') } };
+  const h = host(t, f, [saved]);
+  assert.equal((await h.dispatch(f.roots[0])).isError, true);
+  assert.equal(existsSync(f.locks), false);
+  assert.equal(h.calls.length, 0);
+  assert.deepEqual(h.entries, [saved]);
+});
+
+test('coordinator profile requires scoped parsing without broad tools or model override', () => {
+  const profile = readFileSync(new URL('../agents/project-worker.md', import.meta.url), 'utf8').split('---')[1];
+  assert.match(profile, /^extensions: scoped$/m);
+  assert.match(profile, /^tools: read,grep,find,ls,bash,edit,write$/m);
+  assert.match(profile, /^name: project-worker$/m);
+  assert.match(profile, /^subagent_agents: scout,worker,reviewer,oracle,researcher,evidence-auditor,delegate,ui-verifier$/m);
+  assert.match(profile, /^max_turns: 30$/m);
+  assert(!/^model:/m.test(profile));
 });

@@ -11,7 +11,7 @@ const host = process.env.PI_TEST_HOST_ROOT;
 const native = process.env.PI_TEST_INTERACTIVE_ROOT;
 const available = host && native && process.platform === 'linux' && fs.existsSync(path.join(host, 'dist/cli.js'));
 
-test('SDK host discovers interactive project workers, owns results and resumes bounded PTY sessions offline', {
+for (const scenario of ['', 'drain', 'cancel', 'shutdown', 'capacity']) test(`${scenario || 'baseline'}: SDK host discovers interactive project workers, owns results and resumes bounded PTY sessions offline`, {
   skip: !available ? 'Requires Linux, PI_TEST_HOST_ROOT (Pi 1.5+) and PI_TEST_INTERACTIVE_ROOT; no dependencies are installed.' : false,
   timeout: 120000,
 }, () => {
@@ -25,10 +25,10 @@ test('SDK host discovers interactive project workers, owns results and resumes b
       PI_OFFLINE: '1', PI_E2E_LIVE: '0', PI_RUN_LIVE_SUBAGENT_TESTS: '0', TERM: 'xterm-256color',
       PI_SUBAGENT_SURFACE_BACKEND: 'process',
       PI_TEST_FAUX: path.join(host, 'node_modules/@earendil-works/pi-ai/dist/providers/faux.js') };
-    const outcome = spawnSync(process.execPath, [path.join(source, 'test/fixtures/interactive-host.mjs'), host, native, source], {
+    const outcome = spawnSync(process.execPath, [path.join(source, 'test/fixtures/interactive-host.mjs'), host, native, source, scenario], {
       cwd: home, env, encoding: 'utf8', timeout: 110000, maxBuffer: 4 * 1024 * 1024,
     });
     assert.equal(outcome.status, 0, `${outcome.error?.message ?? ''}\n${outcome.stderr}\n${outcome.stdout}`);
-    assert.match(outcome.stdout, /PROJECT_INTERACTIVE_HOST_OK/);
+    assert.match(outcome.stdout, scenario ? /PROJECT_COORDINATOR_HOST_OK/ : /PROJECT_INTERACTIVE_HOST_OK/);
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });

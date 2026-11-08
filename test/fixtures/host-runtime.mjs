@@ -56,24 +56,8 @@ const loader = new sdk.DefaultResourceLoader({
         let content = [{ type: 'text', text: 'COORDINATOR_NOTICE' }];
         if (text.startsWith('HOST_CALL ') && results.length === 0) {
           content = [{ type: 'toolCall', id: `host-${requests.length}-${Date.now()}`, name: 'project_session', arguments: JSON.parse(text.slice(10)) }];
-        } else if (!text.startsWith('HOST_CALL ') && task && JSON.stringify(context).includes('You implement only the explicitly assigned task')) {
-          requests.push(task);
-          if (task === 'FIXTURE_TASK_A3') {
-            assert(JSON.stringify(context.messages).includes('FIXTURE_TASK_A1'), 'first task context lost');
-            assert(JSON.stringify(context.messages).includes('FIXTURE_TASK_A2'), 'second task context lost');
-            assert(!JSON.stringify(context.messages).includes('FIXTURE_TASK_B1'), 'other repository task leaked into worker context');
-          }
-          assert(requests.length < 30, 'Unexpected fixture model loop');
-          if (results.length === 0) content = [{ type: 'toolCall', id: `${task}-read`, name: 'read', arguments: { path: 'AGENTS.md' } }];
-          else if (results.length === 1) content = [{ type: 'toolCall', id: `${task}-pwd`, name: 'bash', arguments: { command: 'pwd' } }];
-          else if (results.length === 2) content = [{ type: 'toolCall', id: `${task}-write`, name: 'write', arguments: { path: 'proof.txt', content: task } }];
-          else {
-            assert(results.every(r => !r.isError), JSON.stringify(results));
-            const root = task.includes('_A') ? repoA : repoB;
-            assert(JSON.stringify(results[0]).includes(task.includes('_A') ? 'A_INSTRUCTIONS' : 'B_INSTRUCTIONS'));
-            assert(JSON.stringify(results[1]).includes(root));
-            content = [{ type: 'text', text: `${task} done in ${root}` }];
-          }
+        } else if (task && !text.startsWith('HOST_CALL ')) {
+          assert.fail('Historical runtime must never launch the coordinator profile');
         }
         const message = { role: 'assistant', content, api: model.api, provider: model.provider, model: model.id,
           stopReason: content[0].type === 'toolCall' ? 'toolUse' : 'stop', timestamp: Date.now(),
@@ -111,71 +95,16 @@ try {
   assert.notEqual(readAllowed?.block, true, 'incidental read was blocked');
   const manager = globalThis[Symbol.for('pi-subagents:manager')];
   assert(manager, 'native subagent manager missing');
-  const launch = async (root, task) => {
-    const result = await call({ action: 'dispatch', path: root, task });
-    assert(!result.isError, JSON.stringify(result));
-    assert(result.details?.agentId, JSON.stringify(result));
-    const liveManager = globalThis[Symbol.for('pi-subagents:manager')];
-    await liveManager.waitForAll();
-    const record = liveManager.getRecord(result.details.agentId);
-    assert.equal(record?.status, 'completed', JSON.stringify({ error: record?.error, model: record?.session?.model, type: record?.type }));
-    assert.equal(record.session.sessionManager.getCwd(), root);
-    assert.match(record.result, new RegExp(task + ' done'));
-    return result.details.agentId;
-  };
-  const first = await launch(repoA, 'FIXTURE_TASK_A1');
-  const second = await launch(repoB, 'FIXTURE_TASK_B1');
-  assert.notEqual(first, second);
-  const repeated = await launch(repoA, 'FIXTURE_TASK_A2');
-  assert.equal(first, repeated, 'idle repository worker was not reused');
-  assert.equal(fs.readFileSync(path.join(repoA, 'proof.txt'), 'utf8'), 'FIXTURE_TASK_A2');
-  assert.equal(fs.readFileSync(path.join(repoB, 'proof.txt'), 'utf8'), 'FIXTURE_TASK_B1');
-  assert.equal(fs.existsSync(path.join(home, 'proof.txt')), false);
+  for (const root of [repoA, repoB]) {
+    const refused = await call({ action: 'dispatch', path: root, task: 'FIXTURE_TASK_A1' });
+    assert.equal(refused.isError, true, JSON.stringify(refused));
+    assert.match(JSON.stringify(refused.content), /upgrade.*restart/i);
+  }
+  assert.equal(starts.length, 0);
+  assert.equal(fs.existsSync(path.join(agentDir, 'project-sessions/locks')), false);
   assert.equal(session.sessionManager.getCwd(), coordinator);
-  const result = await call({ action: 'result', path: repoA });
-  assert(!result.isError, JSON.stringify(result));
-  assert.match(JSON.stringify(result.content), /FIXTURE_TASK_A2 done/);
-  const listed = await call({ action: 'list' });
-  assert.match(JSON.stringify(listed), /repo A/);
-  assert.match(JSON.stringify(listed), /repo B/);
-  const savedManager = session.sessionManager;
-  const rebuild = async () => {
-    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'reload' });
-    session.dispose();
-    await loader.reload();
-    assert.deepEqual(loader.getExtensions().errors, []);
-    ({ session } = await sdk.createAgentSession({ cwd: coordinator, agentDir, resourceLoader: loader, sessionManager: savedManager }));
-    await session.bindExtensions({ mode: 'rpc' });
-    await session.setModel(session.modelRuntime.getModel('project-fixture', 'fixture'));
-  };
-  await rebuild();
-  assert.equal(globalThis[Symbol.for('pi-subagents:manager')].getRecord(first), undefined);
-  const reopened = await launch(repoA, 'FIXTURE_TASK_A3');
-  assert.equal(reopened, first, 'saved repository session was not reopened under the same ID');
-  assert.equal(fs.readFileSync(path.join(repoA, 'proof.txt'), 'utf8'), 'FIXTURE_TASK_A3');
-  assert.equal(fs.readFileSync(path.join(repoB, 'proof.txt'), 'utf8'), 'FIXTURE_TASK_B1');
-  assert.equal(session.sessionManager.getCwd(), coordinator);
-
-  const changedConfigRoot = path.join(home, 'changed-config-root');
-  fs.mkdirSync(changedConfigRoot);
-  fs.unlinkSync(coordinator); fs.symlinkSync(changedConfigRoot, coordinator);
-  await rebuild();
-  const beforeRetarget = starts.length;
-  const retargeted = await call({ action: 'dispatch', path: repoA, task: 'FIXTURE_TASK_A3' });
-  assert.equal(retargeted.isError, true, 'retargeted coordinator symlink accepted old worker');
-  assert.equal(starts.length, beforeRetarget, 'retargeted config root started a worker');
-  fs.unlinkSync(coordinator); fs.symlinkSync(home, coordinator);
-
-  fs.unlinkSync(path.join(agentDir, 'agents/project-worker.md'));
-  await rebuild();
-  const repoC = path.join(home, 'repo C');
-  fs.mkdirSync(repoC); execFileSync('git', ['init', '-q', repoC]);
-  const startCount = starts.length;
-  const refused = await call({ action: 'dispatch', path: repoC, task: 'FIXTURE_TASK_B1' });
-  assert.equal(refused.isError, true, 'missing profile silently used fallback');
-  assert.equal(starts.length, startCount, 'missing profile started a worker');
   assert.equal(networkAttempts, 0);
-  console.log('PROJECT_HOST_OK: two repos, real read/bash/write, live and saved resume, unchanged coordinator cwd, missing-profile refusal, no network.');
+  console.log('PROJECT_HOST_OK: historical native backend refuses coordinator dispatch before lease or launch, write guard and read access preserved, no network.');
 } finally {
   await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
   session.dispose();

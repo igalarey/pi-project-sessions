@@ -10,7 +10,7 @@ const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const host = process.env.PI_TEST_HOST_ROOT;
 const native = process.env.PI_TEST_SUBAGENTS_ROOT;
 
-test('official host and native subagents keep separate repo sessions and reuse the idle worker', {
+test('official host with historical native subagents refuses coordinator dispatch before lease or launch', {
   skip: !host || !native ? 'Set PI_TEST_HOST_ROOT and PI_TEST_SUBAGENTS_ROOT for the offline host test.' : false,
   timeout: 90_000,
 }, () => {
