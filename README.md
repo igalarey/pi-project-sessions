@@ -79,7 +79,7 @@ The profile requires `extensions: scoped`, the native mode for fixed tools and p
 It retains its declared local file/shell tools and native delegation/control tools.
 It enables no optional provider tools or broad extension discovery.
 It declares `skill_catalog: diagnose-root,enforce-first,edit-document,simple-english,security-review,elaborate-spec,grounded-citations` for named procedure discovery without automatic bootstrap; the conflicting `skills: false` is absent.
-This declaration requires the native named-catalog contract verified in the coordinated source snapshot below; the older sealed baseline does not satisfy the coordinator requirements.
+This declaration requires the native named-catalog contract verified for the public release. The older sealed baseline does not satisfy the coordinator requirements.
 The native runtime explicitly adds the restricted delegation/control toolset for its named spawn targets.
 The coordinator implements straightforward work itself and delegates only independent/complex work or independent review.
 The profile instructs the coordinator to keep at most two active specialists.
@@ -130,21 +130,38 @@ The historical backend uses `subagents:disposed`.
 The interactive backend uses `interactive-subagents:disposed`.
 An event from the other backend cannot release a worker's lease.
 
-## Sanitized publication boundary
+## Public release and installation pin
 
-`publish/sanitized-coordinator` contains one aggregate commit based on public `main` at `3d5faa6f160d42d6981a23034e3a5fc5fc61b1f6`.
+`publish/sanitized-coordinator` starts with aggregate coordinator commit `58b02fa776fe4bc0d9aca6ad0b3b3f5a6b9320c4`, based on public `main` at `3d5faa6f160d42d6981a23034e3a5fc5fc61b1f6`.
 It does not include the intervening local coordinator commits as ancestors.
-Its runtime, profiles, and test fixtures are byte-equivalent to local `master` at `bbbb4956fa70a0ff9a45206df422548d9ee275c6`; documentation differs.
+The activated harness release uses this public coordinator pin, not an unpublished local commit.
+Later documentation commits on this branch do not change that pin.
+Equivalent runtime bytes do not make a later documentation HEAD the same Git commit as the installation pin.
 
-The existing harness pins unpublished local coordinator commit `ce4f82674f4cb6ccc17f0fb48148f05b8140582c`.
-Equivalent source bytes do not make the public commit and that local pin the same Git identity.
-Preparing this branch does not change the local installation or the harness pin.
-A new reproducible harness release pinned to published commits remains pending.
-The offline checks do not certify that future release or a fresh installation.
+The [public harness verification receipt](https://github.com/igalarey/agent-config/blob/publish/sanitized-harness/docs/scoped-source-verification.md) records the activated release and its reproducibility checks.
+The public harness branch is `publish/sanitized-harness`.
+
+| Component | Public pin or release |
+| --- | --- |
+| Coordinator | `58b02fa776fe4bc0d9aca6ad0b3b3f5a6b9320c4` |
+| Harness source | `dbb8b4927427b48473431d77aae9f7f97ea06a5a` |
+| Harness recipe | `18cddcced20826f6f03f844393d5f7d3227846e3` |
+| Activated release | `h-dbb8b4927427-s-21628a941dbc-m-35275b8ce08a` |
+
+The receipt records passing official verification groups of 14, 5, and 1 checks for both the candidate and the cold bootstrap.
+The cold bootstrap used a clean GitHub clone without a source map or copied private sources.
+It used the existing npm cache only and passed verification after temporary activation.
+The runtime and `sourceDigest` matched between the candidate and the cold bootstrap.
+
+Combined candidate verification passed one harness check and 37 coordinator tests, with one historical-backend test skipped.
+The cold combined run also passed.
+Doctor reported zero conflicts and zero pending changes.
+These results do not certify public websites, real-model behavior, or every future host configuration.
 
 ## Local installation
 
-Do not activate this coordinator preparation until the final packaged runtime and real specialist profiles pass the gates below. A source-snapshot test is not installation certification.
+Use the public coordinator pin with the compatible harness release recorded in the verification receipt.
+A source-snapshot test alone is not installation certification.
 
 The installed Pi host and native subagent package are prerequisites.
 The interactive runtime must provide owned status and the `resume_only`, `expected_cwd`, and `expected_agent` parameters.
@@ -153,12 +170,15 @@ Historical RPC launch/resume support is removed; it cannot establish the coordin
 This package has no npm dependencies. It is a separate user extension, not part of the sealed harness package set.
 The repository is public. The SSH clone command requires a GitHub SSH key.
 
-After the sanitized branch is published, clone that branch before installation:
+Clone the public branch. Then check out the exact installation pin:
 
 ```sh
 git clone --branch publish/sanitized-coordinator git@github.com:igalarey/pi-project-sessions.git
 cd pi-project-sessions
+git checkout --detach 58b02fa776fe4bc0d9aca6ad0b3b3f5a6b9320c4
 ```
+
+The installed checkout must remain clean at that pin, even when the branch contains newer documentation.
 
 1. Run the tests from this directory:
 
@@ -219,16 +239,16 @@ The interactive fixture also requires Linux and the existing process-PTY prerequ
 It does not install dependencies.
 These fixtures do not verify Herdr dashboard behavior or real-model interpretation of a task.
 
-### Coordinator preparation boundary
+### Coordinator scope
 
-This is bounded profile preparation, not activation of a new installed hierarchy.
+This extension supplies the bounded coordinator profile. The harness owns release activation and the real specialist profiles.
 Binding/backend identity, busy refusal, restrictive same-session resume, and lease/disposal handling remain in place. A dispatch capability gate now runs before acquiring any project lease, with no fallback to historical launch/resume.
 Previously saved native loadouts are replayed exactly: changing this profile does not upgrade old sessions or convert historical backend bindings.
 No automatic skills, broad discovery, model escalation, or runtime per-parent policy is added here.
 Before activation, verify named personal skill discovery without auto-bootstrap and the two-active-specialists per-parent policy.
 Verify that all seven canonical targets and the local optional `ui-verifier` prohibit further delegation.
 The seven canonical names follow the user-provided canonical nicobailon/pi-subagents inventory at `52e68e9ef0e563d5c97b28519f9999f1b5fbbbea`; this repository does not fetch or adapt those role bodies.
-The main harness owns that later migration. Even the `delegate` specialist must not delegate further.
+The main harness owns those real profiles. Even the `delegate` specialist must not delegate further.
 The host still needs owned status, restrictive resume, and a truthful disposal event after descendant process termination.
 
 Offline coordinator scenarios use temporary specialist definitions (read-only, no delegation), two Git roots, the official Pi 1.5 SDK and process PTYs.
@@ -277,16 +297,16 @@ To isolate a scenario, replace `npm test` with
 `node --test --test-name-pattern='drain:' test/interactive-host.test.mjs`
 (or `cancel:` / `shutdown:` / `capacity:`). No packages are installed by these commands.
 
-### Remaining activation gates
+### Validation requirements for later releases
 
 - Run the full suite against the final packaged native runtime, not only `capacity`. Temporary snapshots can disappear.
-- Reverify after the native binding-propagation work lands. The snapshot run does not certify those later changes.
+- Reverify after changes to native binding propagation. Historical snapshot runs do not certify later changes.
 - Verify that the seven real adapted specialist profiles and local optional `ui-verifier` prohibit delegation.
 - Verify their approved capabilities. Synthetic fixtures do not test the real role bodies.
 - Verify the real named procedure catalog and final installed configuration without broad discovery or automatic bootstrap.
 - Keep runtime-level coverage for atomic concurrent admission, global reservation/resume accounting, and failure-path cleanup; this fixture does not exhaustively prove those races.
 
-Do not run against the concurrently edited native checkout without coordination. No merge, activation, or installed runtime changes are implied by source preparation.
+Do not run against a concurrently edited native checkout without coordination. Historical source preparation alone did not imply activation.
 
 ### Fail-closed rollout handshake
 
@@ -311,7 +331,7 @@ Lists and owned results remain readable without the marker, subject to the exist
 
 Regression fixtures explicitly install the complete capability marker only for supported synthetic interactive runtimes and test absent/incomplete grants before any lease directory is created.
 The source host suite passed against the coordinated native source with the four-grant marker and persisted extension bindings.
-Run it against the final packaged artifact before activation.
+For later releases, run it against the final packaged artifact before activation.
 Tests do not make the phase-two snapshot compatible.
 
 ### Scoped-profile backward-rollout barrier
@@ -324,8 +344,10 @@ Old loaded sessions must fail closed and require a compatible runtime restart; n
 The seven real specialist profiles are adapted separately by the main harness; synthetic fixtures use scoped mode without adding delegation or optional providers.
 
 The reviewed coordinator log records 33 passed, 0 failed, 1 skipped against native commit `bda58d857386ffc75f228b59b9dc11d62baa4ac9` for the preceding three-grant guard.
-That earlier evidence does not certify the scoped-mode followup. The subsequent reviewed log records 37 passed, 0 failed, 1 skipped against native `c3bf7936929584c642b9f0ab36e84e67ea6fbb1a` with scoped parsing and all four grants. Final packaged-runtime and real-profile verification remains required.
-Rerun the full offline host suite against that artifact, including old-parser rejection, capacity, saved resume, draining, cancellation isolation, and catalog restrictions. Actual host tests must not inject a substitute marker.
+That earlier evidence does not certify the scoped-mode followup. The subsequent reviewed log records 37 passed, 0 failed, 1 skipped against native `c3bf7936929584c642b9f0ab36e84e67ea6fbb1a` with scoped parsing and all four grants.
+These are historical source results, not the current release receipt.
+For later releases, rerun the full offline host suite against the packaged artifact.
+Include old-parser rejection, capacity, saved resume, draining, cancellation isolation, and catalog restrictions. Actual host tests must not inject a substitute marker.
 
 ### Local optional public-interface verifier
 
@@ -337,12 +359,12 @@ The harness owns the actual scoped profile.
 It permits read-only built-in inspection plus `browser_goto`, `browser_read`, `browser_click`, `browser_screenshot`, and `browser_close`.
 It prohibits form filling, sensitive actions, desktop control, Bash, file writes, and descendants.
 Its specified limits are 20 turns, Sol/medium, and the `smoke-test`/`grounded-citations` catalog.
-This repository neither installs that profile nor certifies its browser tools. Real-profile/browser verification belongs to the harness suite and remains a rollout gate.
+This repository neither installs that profile nor certifies its browser tools. Real-profile/browser verification belongs to the harness suite, not these synthetic fixtures.
 
 The offline fixture adds `ui-verifier` as a synthetic read-only, non-delegating, two-turn profile using the inherited faux model, without browser tools or network access.
 It occupies the second child slot in the capacity/resume scenario; the two-child cap, global-six limit, and depth-two configuration are unchanged. The fixture asserts absence of Bash/edit/write in specialists and still requires third-child refusal, no descendant delegation, draining, and the same project session on resume.
 
-The ui-verifier source alignment passed the full suite: **37 passed, 0 failed, 1 skipped** (historical backend host package not supplied), with:
+The historical ui-verifier source alignment passed the full suite: **37 passed, 0 failed, 1 skipped** (historical backend host package not supplied), with:
 
 ```sh
 PI_TEST_HOST_ROOT=/path/to/@earendil-works/pi-coding-agent \
@@ -351,4 +373,5 @@ npm test
 ```
 
 The native checkout reported HEAD `c3bf7936929584c642b9f0ab36e84e67ea6fbb1a`; it had pre-existing executable-mode/end-of-line differences (zero textual changes under `git diff --ignore-space-at-eol --numstat`), left untouched.
-This result verifies the synthetic ui-verifier lifecycle, not public websites, browser tooling, real-profile permissions, or desktop behavior. Final packaged-runtime and real-profile verification precede guarded integration and activation.
+This historical result verifies the synthetic ui-verifier lifecycle, not public websites, browser tooling, real-profile permissions, or desktop behavior.
+The public release receipt records the subsequent packaged verification and cold bootstrap.
